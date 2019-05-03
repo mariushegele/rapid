@@ -2,7 +2,7 @@
 	flex -o $@ $<
 
 %.tab.c: %.y
-	bison -d $<
+	bison -d -t -v $<
 
 %: %.tab.c %.yy.c
 	gcc -Wall -ll -lm -o $@ $^

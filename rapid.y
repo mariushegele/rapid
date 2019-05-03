@@ -7,78 +7,78 @@
 
 #define YYERROR_VERBOSE 1
 
-#define FOREACH_TYPE(TYPE) \
-        TYPE(variable_)   \
-        TYPE(predicate)  \
-        TYPE(const_real)   \
-        TYPE(const_int)   \
+typedef struct var {
+  char *id;
+  struct var* next;
+} var;
 
-#define GENERATE_ENUM(ENUM) ENUM,
-#define GENERATE_STRING(STRING) #STRING,
+typedef struct predicate {
+  char *id;
+  var* first_var;
+  struct predicate* next;
+} predicate;
 
-// Enumeration for all Types with according Strings
-enum TYPE_ENUM {
-  FOREACH_TYPE(GENERATE_ENUM)
-};
+typedef struct clause {
+  char *type; // rule or fact
+  predicate* head;
+  predicate* first_subgoal;
+  struct clause* next;
+} clause;
 
-static const char *TYPE_STRING[] = {
-  FOREACH_TYPE(GENERATE_STRING)
-};
+clause* create_clause();
+clause* add_clause(clause*);
 
-// Symbol Table consisting of Structs of Symbols
-struct symbol {
-    int clause;
-    char id[30];
-    enum TYPE_ENUM type;
-    union {
-      int val_int;
-      double val_real;
-   } value;
-   int occ[25];
-   int occ_c;
-};
+predicate* create_predicate();
+predicate* add_predicate(predicate*, predicate*);
 
-int clause_count;
-int clause_start;
+void printClauses();
+void printPredicate(predicate*);
+void printVariables(var*);
 
-int pred_count;
+var* create_variable(char*);
+void add_variable(var*);
 
-int c;
-struct symbol symtable[500];
+// global pointer
+clause* head;
+clause* current_clause;
+predicate* current_predicate;
+
+var* first_variable;
+var* current_variable;
+
+int clause_count = 0;
 
 void yyerror(const char *);
 int yylex();
-
-bool strCmp(char*, char*);
-int indexOf(const char*);
-void printTable();
 
 %}
 
 %token left_arrow is
 %token atom variable 
-%token number rnum string
+%token num real string
 %token open_round_brackets close_round_brackets
 %token open_square_brackets close_square_brackets
 %token pipesym
 %token dot comma
-%token smaller greater equal whatthehell
+%token smaller greater equal colon whatthehell
 %token plus minus times divby
 %token comment ml_comment
 %token end undefined
 
 %union {
-  int integer;
-  double real;
   char* str;
+  struct predicate* pred;
+  struct clause* clause;
 }
 
-%type<str> atom
-%type<str> variable
-%type<real> rnum
-%type<integer> number
+%type<str> atom variable
+%type<str> Term TermList Operand Function List RestList
+%type<str> Operation Constant Condition Assignment
+%type<str> num real
 
-%type <str> Clause
+%type<clause> Rule Fact Clause
+
+%type<pred> Predicate PredMark PredicateList
 
 %start S
 
@@ -90,209 +90,242 @@ void printTable();
 
 %%
 
-S: Clause end { 
-    printf("\n\t => %s \n\n", $1);
-    //printTable();
+S: M Clause { 
+    printf("\n\t => %s \n\n", $2->type);
   }
- | S Clause end {
-    clause_start = c;
-    clause_count++;
-    printf("\n\t => %s \n\n", $2); 
-    //printTable();
+  | S M Clause {
+    printf("\n\t => %s \n\n", $3->type); 
   }
+  | S Comment;
+  | Comment;
   | S end;
   | end;
 
-Clause: Rule dot { $$ = "Rule"; }
-  | Fact dot { $$ = "Fact"; }
-  | Comment { $$ = "Comment"; };
-
-Rule: Predicate left_arrow PredicateList { 
-  printf(" Rule "); 
-  pred_count = 0;
+M: { printf("%d\n", clause_count);
+  clause_count++;
+  clause* new_clause = create_clause(); 
+  add_clause(new_clause); 
+  
   };
 
-Fact: Predicate { printf("Fact"); };
+Clause: Rule { 
+  current_clause->type = "rule";
+  $$ = current_clause;
+ }
+  | Fact { 
+    current_clause->type = "fact";
+    $$ = current_clause; 
+  };
 
-PredicateList: Predicate { printf(" PredicateList "); ; }
+Rule: Predicate left_arrow PredicateList dot {
+    current_clause->head = $1;
+    current_clause->first_subgoal = $3;
+  };
+
+Fact: Predicate dot {
+    current_clause->head = $1;
+    current_clause->first_subgoal = NULL;
+  };
+
+PredicateList: Predicate { $$ = $1; }
   | Predicate comma PredicateList { 
-      printf(" PredicateList ");
-      pred_count++;
+      predicate* head = $1;
+      predicate* next = $3;
+
+      head->next = next;
+      $$ = head;      
   };
 
-Predicate: atom open_round_brackets TermList close_round_brackets {
-    printf("Predicate %s", $1);
-    symtable[c].clause = clause_count;
-    strncpy(symtable[c].id, $1, sizeof(symtable[c].id));
+Predicate: atom open_round_brackets PredMark TermList close_round_brackets {
+    printf(" %s(%s) ", $1, $4);
+    predicate* new_pred = $3;
+    new_pred->id = strdup($1);
 
-    symtable[c].type = predicate;
-    c++;
+    current_predicate->first_var = first_variable;
+
+    $$ = new_pred;
   }
-  | Condition {printf(" Predicate "); }
-  | Assignment {printf(" Predicate "); }
-  | Definition {printf(" Predicate "); };
-
-TermList: Term { printf(" TermList "); }
-  | Term comma TermList { printf(" TermList "); };
-
-Term: Function { printf(" Term "); }
-  | List { printf(" Term "); }
-  | Operand { printf(" Term "); };
-
-Function: atom open_round_brackets TermList close_round_brackets{
-    printf(" Function "); };
-
-List: open_square_brackets TermList close_square_brackets {
-    printf(" List "); 
-  }
-  | open_square_brackets List close_square_brackets {
-    printf(" List "); 
-  }
-  | open_square_brackets TermList comma List close_square_brackets {
-    printf(" List "); 
-  }
-  | open_square_brackets TermList pipesym Term close_square_brackets {
-    printf(" List "); 
+  | PredMark Condition {
+    printf(" %s ", $2);
+    predicate* new_pred = $1;
+    new_pred->id = strdup($2);
+    current_predicate->first_var = first_variable;
+    $$ = new_pred;
+   }
+  | PredMark Assignment {
+    printf(" %s ", $2);
+    predicate* new_pred = $1;
+    new_pred->id = strdup($2);
+    current_predicate->first_var = first_variable;
+    $$ = new_pred;
   };
 
-Operand: variable { 
-    printf(" Operand-variable %s", $1); 
-    symtable[c].clause = clause_count;
-
-    strncpy(symtable[c].id, $1, sizeof(symtable[c].id));
-    symtable[c].type = variable_;
-    symtable[c].occ_c = 0;
-    c++;
-    
-    // check if in table
-    //int i = indexOf(symtable[c].id);
-    //printf("\nI: %d\n", i);
-
-/*
-    if(i == -1) {
-
-    } else {
-      sym = symtable[i];
-      sym.occ[sym.occ_c] = pred_count;
-      sym.occ_c++;
-    }
-    */
-
-  }
-  | Operation { printf(" Operand "); }
-  | Constant { printf(" Operand "); };
-
-Constant: number { 
-    printf(" Constant %d ", $1);
-    symtable[c].clause = clause_count;
-    symtable[c].value.val_int = $1;
-    symtable[c].type = const_int;
-    c++;
-  }
-  | rnum { 
-    printf(" Constant %lf ", $1);
-    symtable[c].clause = clause_count;
-    symtable[c].value.val_real = $1;
-    symtable[c].type = const_real;
-    c++;
+PredMark: { predicate* new_pred = create_predicate(); 
+    current_predicate = new_pred;
+    first_variable = NULL;
+    current_variable = NULL;
+    $$ = new_pred; 
   };
 
-Operation: open_round_brackets Operation close_round_brackets { printf(" Operation "); }
-  | Operand plus Operand { printf(" Operation "); }
-  | Operand minus Operand { printf(" Operation "); }
-  | Operand times Operand { printf(" Operation "); }
-  | Operand divby Operand { printf(" Operation "); };
+TermList: Term { $$ = $1; }
+  | Term comma TermList { asprintf(&$$, "%s, %s", $1, $3); 
+  };
+  
+Term: Operand { $$ = $1; }
+  | List { $$ = $1; }
+  | Function { $$ = $1; };
 
-Condition: Operand greater Operand { printf(" Condition "); }
-  | Operand smaller Operand { printf(" Condition "); }
-  | Operand greater equal Operand { printf(" Condition "); }
-  | Operand equal smaller Operand { printf(" Condition "); }
-  | Operand equal equal Operand { printf(" Condition "); }
-  | Operand whatthehell equal equal Operand { printf(" Condition "); };
+Function: atom open_round_brackets TermList close_round_brackets {
+    asprintf(&$$, "%s(%s)", $1, $3);
+  };
 
-Assignment: Operand equal Operand { printf(" Assignment "); }
-  | Operand whatthehell equal Operand { printf(" Assignment "); };
+List: open_square_brackets close_square_brackets { asprintf(&$$, "[]"); }
+  | open_square_brackets Operand close_square_brackets { asprintf(&$$, "[%s]", $2); }
+  | open_square_brackets List close_square_brackets { asprintf(&$$, "[%s]", $2); }
+  | open_square_brackets List comma List close_square_brackets { asprintf(&$$, "[%s, %s]", $2, $4); }
+  | open_square_brackets Operand pipesym RestList close_square_brackets { asprintf(&$$, "[%s|%s]", $2, $4); };
 
-Definition: Term is Term { printf(" Definition "); };
+RestList: List {$$ = $1}
+  | Operand {$$ = $1};
 
-Comment: comment { printf(" Comment "); }
-  | ml_comment { printf(" Comment "); };
+Operand: variable {
+    var* v = create_variable($1);
+    add_variable(v);
+    $$ = v->id;
+  }
+  | Operation { $$ = $1; }
+  | Constant { $$ = $1; };
+
+Constant: num { $$ = $1; }
+  | real { $$ = $1; };
+
+Operation: open_round_brackets Operation close_round_brackets { asprintf(&$$, "(%s)", $2); }
+  | Operand plus Operand { asprintf(&$$, "+(%s, %s)", $1, $3); }
+  | Operand minus Operand { asprintf(&$$, "-(%s, %s)", $1, $3); }
+  | Operand times Operand { asprintf(&$$, "*(%s, %s)", $1, $3); }
+  | Operand divby Operand { asprintf(&$$, "/(%s, %s)", $1, $3); };
+
+Condition: Operand greater Operand { asprintf(&$$, ">(%s, %s)", $1, $3); }
+  | Operand smaller Operand { asprintf(&$$, "<(%s, %s)", $1, $3); }
+  | Operand greater equal Operand { asprintf(&$$, ">=(%s, %s)", $1, $4); }
+  | Operand equal smaller Operand { asprintf(&$$, "=<(%s, %s)", $1, $4); }
+  | Operand equal equal Operand { asprintf(&$$, "==(%s, %s)", $1, $4); }
+  | Operand equal colon equal Operand { asprintf(&$$, "=:=(%s, %s)", $1, $5); }
+  | Operand equal whatthehell equal Operand { asprintf(&$$, "=\\=(%s, %s)", $1, $5); }
+  | Operand whatthehell equal equal Operand { asprintf(&$$, "\\==(%s, %s)", $1, $5); }
+  | Term is Operand { { asprintf(&$$, "is(%s, %s)", $1, $3); }; };
+
+Assignment: Operand equal Operand { asprintf(&$$, "=(%s, %s)", $1, $3); }
+  | Operand whatthehell equal Operand { asprintf(&$$, "\\=(%s, %s)", $1, $4); };
+
+Comment: comment { }
+  | ml_comment { };
 
 %%
 
+clause* create_clause() {
+  clause* c = malloc(sizeof(struct clause));
+  c->next = NULL;
+
+  return c;
+};
+
+clause* add_clause(clause* c) {
+  if(current_clause == NULL) {
+    // List empty
+    head = c;
+  } else {
+    current_clause->next = c;
+  }
+
+  current_clause = c;
+  return c;
+};
+
+predicate* create_predicate() {
+  predicate* p = malloc(sizeof(struct predicate));
+  p->next = NULL;
+  p->first_var = NULL;
+  return p;
+};
+
+var* create_variable(char* id) {
+  var* v = malloc(sizeof(struct var));
+  v->id = strdup(id);
+  v->next = NULL;
+  
+  return v;
+};
+
+void add_variable(var *v) {
+  if(current_variable == NULL) {
+    // list empty
+    first_variable = v;
+  } else {
+    current_variable->next = v;
+  }
+
+  current_variable = v;
+
+  printf("%s", v->id);
+}
+
+
+
+void printClauses() {
+  int i = 1;
+  clause* c = head;
+  while(c != NULL) {
+    printf("%d \t type: %s \n", i, c->type);
+
+    printf("\t head: ");
+    printPredicate(c->head);
+
+    predicate* p = c->first_subgoal;
+    int j = 1;
+    while(p != NULL) {
+      printf("\t subgoal %d: ", j);
+      printPredicate(p);
+
+      j++;
+      p = p->next;
+    }
+
+    printf("\n");
+    i++;
+    c = c->next;
+  }
+}
+
+void printPredicate(predicate* p) {
+  printf("%s – ", p->id);
+  if(p->first_var != NULL) {
+    printVariables(p->first_var);
+  }
+}
+
+
+void printVariables(var* head) {
+  int i = 1;
+  var* cursor = head;
+  while(cursor->next != NULL) {
+    printf("%d: %s, ", i, cursor->id);
+    i++;
+    cursor = cursor->next;
+  }
+  if(cursor != NULL) {
+    printf("%d: %s", i, cursor->id);
+  }
+}
+
 int main(void) {
-  clause_count = 0;
 
   yyparse();
-  printTable();
+  printClauses();
 
   return 1;
 }
 
 void yyerror(const char* e) {
   printf("Error: %s\n", e);
-}
-
-bool strCmp(char* l, char* r) {  
-  while(*l != '\0' && *r != '\0') {
-    if(*l != *r) {
-      return false;
-    }
-    l++;
-    r++;
-  }
-
-  if(*l == '\0' && *r == '\0') {
-    return true;
-  } 
-  
-  return false;
-}
-
-
-int indexOf(const char* id) {
-  
-  int i=clause_start;
-  while(i != c && i < 500) {
-    printf("I: %d", i);
-    /*
-    if(strCmp(symtable[i].id, id)) {
-      return i;
-    }
-    */
-    i++;
-  }
-
-  return -1;
-}
-
-
-void printTable() {
-  printf("Index\tClause\tIdentifier\tName\tType\tValue\n");
-  
-  struct symbol sym = {};
-  int current_clause = 0;
-
-  for(int i=0; i<c; i++) {
-    printf("%d\t", i);
-
-    if(symtable[i].clause != current_clause || i == 0) {
-      printf("%d\t", symtable[i].clause);
-      current_clause = symtable[i].clause;
-    } else {
-      printf("\t");
-    }
-
-    sym = symtable[i];
-
-    printf("%s\t%s\t", sym.id, TYPE_STRING[sym.type]);
-
-    if(sym.type == const_int) {
-      printf("%d\n", sym.value.val_int);
-    } else if(sym.type == const_real) {
-      printf("%lf\n", sym.value.val_real);
-    } else {
-      printf("\n");
-    }
-  }
 }

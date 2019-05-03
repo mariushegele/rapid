@@ -5,6 +5,9 @@
 %option nounput
 %option noinput
 
+num [1-9][0-9]*|0
+real {num}\.[0-9]+
+
 %%
 
 [ \t] // ignore space
@@ -17,19 +20,21 @@ is return is;
     return variable;
 }
 
-[a-z][a-zA-Z0-9_]*|\'[.]+\' {
+[a-z][a-zA-Z0-9_]* {
     yylval.str = strdup(yytext);
     return atom;
 }
 
-[0-9]+ {
-    sscanf(yytext, "%d", &yylval.integer);
-    return number;
+{num} {
+    yylval.str = strdup(yytext);
+    return num;
 }
-[0-9]+.[0-9]+ {
-    sscanf(yytext, "%lf", &yylval.real); 
-    return rnum;
+
+{real} {
+    yylval.str = strdup(yytext);
+    return real;
 }
+
 \"[a-zA-Z0-9]*\" return string;
 
 \( return open_round_brackets;
@@ -42,6 +47,7 @@ is return is;
 \< return smaller;
 \> return greater;
 \= return equal;
+\: return colon;
 \\ return whatthehell;
 
 \+ return plus;
