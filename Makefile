@@ -2,10 +2,10 @@
 	flex -o $@ $<
 
 %.tab.c: %.y
-	bison -d -t -v $<
+	bison -d --debug -t -v $<
 
 %: %.tab.c %.yy.c
-	gcc -Wall -ll -lm -o $@ $^
+	gcc -Wall -ll -lm -g -o $@ $^
 	rm $@.tab.h
 	chmod u+x $@
 

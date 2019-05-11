@@ -23,23 +23,56 @@ typedef struct clause {
   predicate* head;
   predicate* first_subgoal;
   struct clause* next;
+  struct graph* graph;
 } clause;
 
+typedef struct edge {
+  // node* from;
+  struct node* dst;
+  unsigned short lr; // 1 = L, 2 = R
+  struct edge* next;
+} edge;
+
+typedef struct node {
+  char type; // one of E, U, C, A, R, G, I
+  struct edge* first_out;
+  char* input; // for E, G, I
+  int index;
+  struct node* next;
+} node;
+
+typedef struct graph {
+  node* entry;
+  node* node_head;
+} graph;
+
+
+// clauses, predicates, variables
 clause* create_clause();
 clause* add_clause(clause*);
 
 predicate* create_predicate();
 predicate* add_predicate(predicate*, predicate*);
 
+var* create_variable(char*);
+void add_variable(var*);
+var* shared_variables(predicate*, predicate*);
+var* copy_variable(var*);
+
+bool unconditionallyDependent(predicate*, predicate*, predicate*);
+
+bool strCmp(char*, char*);
 void printClauses();
 void printPredicate(predicate*);
 void printVariables(var*);
 
-var* create_variable(char*);
-void add_variable(var*);
+
+
+// graphs, nodes and edges
+
 
 // global pointer
-clause* head;
+clause* head_clause;
 clause* current_clause;
 predicate* current_predicate;
 
@@ -47,6 +80,10 @@ var* first_variable;
 var* current_variable;
 
 int clause_count = 0;
+int node_count = 1;
+
+graph* current_graph = NULL;
+node* current_node = NULL;
 
 void yyerror(const char *);
 int yylex();
@@ -139,7 +176,9 @@ PredicateList: Predicate { $$ = $1; }
 Predicate: atom open_round_brackets PredMark TermList close_round_brackets {
     printf(" %s(%s) ", $1, $4);
     predicate* new_pred = $3;
-    new_pred->id = strdup($1);
+    //new_pred->id = strdup($1); // a ( X, Y )
+    asprintf(&(new_pred->id), "%s(%s)", $1, $4); // a ( X, Y )
+
 
     current_predicate->first_var = first_variable;
 
@@ -148,7 +187,7 @@ Predicate: atom open_round_brackets PredMark TermList close_round_brackets {
   | PredMark Condition {
     printf(" %s ", $2);
     predicate* new_pred = $1;
-    new_pred->id = strdup($2);
+    new_pred->id = strdup($2); // > (X, Y)
     current_predicate->first_var = first_variable;
     $$ = new_pred;
    }
@@ -190,6 +229,7 @@ RestList: List {$$ = $1}
 
 Operand: variable {
     var* v = create_variable($1);
+
     add_variable(v);
     $$ = v->id;
   }
@@ -226,6 +266,7 @@ Comment: comment { }
 clause* create_clause() {
   clause* c = malloc(sizeof(struct clause));
   c->next = NULL;
+  c->graph = NULL;
 
   return c;
 };
@@ -233,7 +274,7 @@ clause* create_clause() {
 clause* add_clause(clause* c) {
   if(current_clause == NULL) {
     // List empty
-    head = c;
+    head_clause = c;
   } else {
     current_clause->next = c;
   }
@@ -251,7 +292,7 @@ predicate* create_predicate() {
 
 var* create_variable(char* id) {
   var* v = malloc(sizeof(struct var));
-  v->id = strdup(id);
+  v->id = id;
   v->next = NULL;
   
   return v;
@@ -271,10 +312,250 @@ void add_variable(var *v) {
 }
 
 
+var* shared_variables(predicate* left, predicate* right) {
+  var* lcursor = left->first_var;
+  var* rcursor;
+
+  var* head_shared = NULL;
+  var* last_shared = NULL;
+  while(lcursor != NULL) {
+    rcursor = right->first_var;
+    while(rcursor != NULL) {
+      if(strcmp(lcursor->id, rcursor->id) == 0) {
+        if(head_shared == NULL) {
+          head_shared = copy_variable(lcursor);
+          last_shared = head_shared;
+        } else {
+          last_shared->next = copy_variable(lcursor);
+          last_shared = last_shared->next;
+        }
+        
+      }
+      rcursor = rcursor->next;
+    }
+    lcursor = lcursor->next;
+  }
+
+  return head_shared;
+}
+
+var* copy_variable(var* src) {
+  var* dst = create_variable(src->id);
+  return dst;
+}
+
+
+/**
+  * Graphs, Nodes, Edges
+  */
+
+graph* create_graph() {
+  graph* new_graph = malloc(sizeof(struct graph));
+  new_graph->entry = NULL;
+
+  // create global pointer
+  current_graph = new_graph;
+  current_node = current_graph->node_head;
+  return new_graph;
+}
+
+node* create_node(char type) {
+  node* new_node = malloc(sizeof(struct node));
+  new_node->index = node_count;
+  node_count++;
+  new_node->type = type;
+  new_node->first_out = NULL;
+  new_node->next = NULL;
+
+  // append to node list
+  if(current_graph->node_head == NULL) {
+    current_graph->node_head = new_node;
+    current_node = current_graph->node_head;
+  } else {
+    current_node->next = new_node;
+    current_node = current_node->next;
+  }
+  return new_node;
+}
+
+edge* create_edge(node* dst, unsigned short lr) {
+  edge* new_edge = malloc(sizeof(struct edge));
+  new_edge->dst = dst;
+  new_edge->lr = lr;
+  new_edge->next = NULL;
+  return new_edge;
+}
+
+// connect the src node with the dst node's input l/r = 1/2
+void connect(node* src, node* dst, unsigned short lr) {
+  
+  if(src->first_out == NULL) {
+    src->first_out = create_edge(dst, lr);
+  } else {
+    edge* last_out = NULL;
+    for(last_out = src->first_out; last_out->next != NULL; last_out = last_out->next) { } // iterate to end
+    last_out->next = create_edge(dst, lr);
+  }
+}
+
+void constructGraphs() {
+  clause* c = head_clause;
+  while(c != NULL) {
+
+      graph* graph = create_graph();
+
+      node* entry_node = create_node('E');
+      entry_node->input = c->head->id;
+      graph->entry = entry_node;      
+
+    if(strcmp(c->type, "fact") == 0) {
+
+      node* return_node = create_node('R');
+
+      connect(entry_node, return_node, 1);
+      
+    } else if(strcmp(c->type, "rule") == 0) {
+
+      node* update_entry_with_last_goal = NULL;
+      node* copy_binding_env = NULL;
+      node* last_copy_apply = NULL;
+
+      int subgoal_count = 1;
+      for(predicate* subgoal = c->first_subgoal; 
+          subgoal != NULL; 
+          subgoal=subgoal->next, subgoal_count++) 
+      {
+        node* update_entry_with_goal = create_node('U');
+
+        if(subgoal_count == 1) {
+          // left of entry with right of subgoal goal update      
+          connect(entry_node, update_entry_with_goal, 2);
+
+          // right of entry distributes binding environment
+          copy_binding_env = create_node('C');
+          connect(entry_node, copy_binding_env, 1);
+        } else {
+          // starting from the second subgoal
+          connect(update_entry_with_last_goal, update_entry_with_goal, 2);
+        }
+
+        update_entry_with_last_goal = update_entry_with_goal;
+
+        node* update_entry_binding = create_node('U');
+        update_entry_binding->input = subgoal->id;
+        connect(copy_binding_env, update_entry_binding, 1);
+
+        if(subgoal_count == 1) {
+          // first subgoal simply apply
+          node* apply = create_node('A');
+          connect(update_entry_binding, apply, 1);
+
+          if(subgoal->next == NULL) {
+            connect(apply, update_entry_with_goal, 1);
+          } else {
+            // else copy out from apply because independence or ground test
+            // could require update of previous subgoal with the new binding
+            node* copy_apply = create_node('C');
+            connect(apply, copy_apply, 1);
+            last_copy_apply = copy_apply;
+          }
+        } else {
+          // execute dependency analysis
+
+          // for all previous subgoals
+          for(predicate* prev_subgoal = c->first_subgoal; prev_subgoal != subgoal; prev_subgoal = prev_subgoal->next) {
+            if(unconditionallyDependent(subgoal, prev_subgoal, c->head)) {
+              printf("unconditionally dependent %s %s\n", subgoal->id, prev_subgoal->id);
+            }
+          }
+        }
+
+
+      }
+
+      // feed last updated environment into return
+      node* return_node = create_node('R');
+      connect(update_entry_with_last_goal, return_node, 1);
+
+    } else {
+      printf("unexpected rule/fact");
+    }
+    c->graph = graph;
+
+
+    c = c->next;
+  }
+}
+
+bool unconditionallyDependent(predicate* left, predicate* right, predicate* head) {
+  var* shared = shared_variables(left, right);
+  for(var* shared_var_cursor = shared; shared_var_cursor != NULL; shared_var_cursor=shared_var_cursor->next) {
+    bool in_head = false;
+    for(var* head_var_cursor = head->first_var; head_var_cursor != NULL; head_var_cursor = head_var_cursor->next) {
+      if(strcmp(shared_var_cursor->id, head_var_cursor->id) == 0) {
+        in_head = true;
+      }
+    }
+    if(!in_head) {
+      // if one shared variable is not in the head of the clause
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void printNode(node* node) {
+  int printed = 0;
+
+  printf("%d\t%c\t", node->index, node->type);
+  if(node->first_out != NULL) {
+    for(edge* edge_cursor = node->first_out;
+      edge_cursor != NULL; edge_cursor = edge_cursor->next)
+      {
+        printf("(%d,%d)\t", edge_cursor->dst->index, edge_cursor->lr);
+        printed++;
+      }
+  }
+
+  while(printed < 2) {
+    printf("-\t");
+    printed++;
+  }
+  
+  if(node->input != NULL) {
+    printf("%s", node->input);
+  }
+  else {
+    if(printed < 3) {
+      printf("-");
+    }
+  }
+  printf("\n");
+}
+
+void printGraphs() {
+  clause* c = head_clause;
+  while(c != NULL) {
+    if(c->graph != NULL) {
+      node* node_cursor = c->graph->node_head;
+      while(node_cursor != NULL) {
+        printNode(node_cursor);
+        node_cursor = node_cursor->next;
+      }
+    }
+    c = c->next;
+  }
+}
+
+
+/**
+  * Prints
+  */
 
 void printClauses() {
   int i = 1;
-  clause* c = head;
+  clause* c = head_clause;
   while(c != NULL) {
     printf("%d \t type: %s \n", i, c->type);
 
@@ -309,12 +590,12 @@ void printVariables(var* head) {
   int i = 1;
   var* cursor = head;
   while(cursor->next != NULL) {
-    printf("%d: %s, ", i, cursor->id);
+    printf("%s, ", cursor->id);
     i++;
     cursor = cursor->next;
   }
   if(cursor != NULL) {
-    printf("%d: %s", i, cursor->id);
+    printf("%s", cursor->id);
   }
 }
 
@@ -322,6 +603,18 @@ int main(void) {
 
   yyparse();
   printClauses();
+  constructGraphs();
+  printGraphs();
+
+  clause* c = head_clause;
+  predicate* l = c->first_subgoal;
+  predicate* r = c->first_subgoal->next;
+
+  var* first_shared = shared_variables(l, r);
+  var* shared_cursor = first_shared;
+  while(shared_cursor != NULL) {
+    shared_cursor = shared_cursor->next;
+  }
 
   return 1;
 }
