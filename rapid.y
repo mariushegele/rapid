@@ -56,10 +56,15 @@ predicate* add_predicate(predicate*, predicate*);
 
 var* create_variable(char*);
 void add_variable(var*);
-var* shared_variables(predicate*, predicate*);
+var* shared_variables(var*, var*);
+var* pred_shared_variables(predicate*, predicate*);
 var* copy_variable(var*);
+void append_variable(var*, var**);
 
 bool unconditionallyDependent(predicate*, predicate*, predicate*);
+bool unconditionallyIndependent(predicate*, predicate*, predicate*);
+var* varsToGroundTest(predicate*, predicate*, predicate*);
+var* varsToIndependenceTest(predicate*, predicate*, predicate*);
 
 bool strCmp(char*, char*);
 void printClauses();
@@ -311,37 +316,64 @@ void add_variable(var *v) {
   printf("%s", v->id);
 }
 
+var* pred_shared_variables(predicate* left, predicate* right) {
+  return shared_variables(left->first_var, right->first_var);
+}
 
-var* shared_variables(predicate* left, predicate* right) {
-  var* lcursor = left->first_var;
-  var* rcursor;
+var* shared_variables(var* left, var* right) {
+  var* lcursor = left;
+  var* rcursor = right;
 
-  var* head_shared = NULL;
-  var* last_shared = NULL;
+  var* shared = NULL;
   while(lcursor != NULL) {
-    rcursor = right->first_var;
+    rcursor = right;
     while(rcursor != NULL) {
       if(strcmp(lcursor->id, rcursor->id) == 0) {
-        if(head_shared == NULL) {
-          head_shared = copy_variable(lcursor);
-          last_shared = head_shared;
-        } else {
-          last_shared->next = copy_variable(lcursor);
-          last_shared = last_shared->next;
-        }
-        
+          var* copy = copy_variable(lcursor);
+          append_variable(copy, &shared);        
       }
       rcursor = rcursor->next;
     }
     lcursor = lcursor->next;
   }
 
-  return head_shared;
+  return shared;
+}
+
+var* diff_variables(var* base, var* compare) {
+  var* diff_vars = NULL;
+
+  for(var* base_cursor = base; base_cursor != NULL; base_cursor = base_cursor->next) {
+    bool not_in_comp = true;
+    for(var* comp_cursor = compare; comp_cursor != NULL; comp_cursor = comp_cursor->next) {
+      if(strcmp(base_cursor->id, comp_cursor->id) == 0) {
+        not_in_comp = false;
+      }
+    }
+
+    if(not_in_comp) {
+      var* copy = copy_variable(base_cursor);
+      append_variable(copy, &diff_vars);
+    }
+  }
+
+  return diff_vars;
 }
 
 var* copy_variable(var* src) {
   var* dst = create_variable(src->id);
   return dst;
+}
+
+void append_variable(var* new_var, var** head) {
+  if(*head == NULL) {
+    *head = new_var;
+  } else {
+    var* cursor = NULL;
+    for(cursor = *head; cursor->next != NULL; cursor=cursor->next) {} // iterate to the end
+    // append...
+    cursor->next = new_var;
+  }
 }
 
 
@@ -464,8 +496,23 @@ void constructGraphs() {
 
           // for all previous subgoals
           for(predicate* prev_subgoal = c->first_subgoal; prev_subgoal != subgoal; prev_subgoal = prev_subgoal->next) {
+            // possibly unconditionally (in)dependent
             if(unconditionallyDependent(subgoal, prev_subgoal, c->head)) {
               printf("unconditionally dependent %s %s\n", subgoal->id, prev_subgoal->id);
+            } else if(unconditionallyIndependent(subgoal, prev_subgoal, c->head)) {
+              printf("unconditionally independent %s %s\n", subgoal->id, prev_subgoal->id);
+            } else if(varsToGroundTest(subgoal, prev_subgoal, c->head) != NULL) {
+              // include ground test node
+              printf("possibly grounded %s %s – ", subgoal->id, prev_subgoal->id);
+              printVariables(varsToGroundTest(subgoal, prev_subgoal, c->head));
+              printf("\n");
+            } else if(varsToIndependenceTest(subgoal, prev_subgoal, c->head) != NULL) {
+              // include independence test node
+              printf("possibly dependent %s %s – ", subgoal->id, prev_subgoal->id);
+              printVariables(varsToIndependenceTest(subgoal, prev_subgoal, c->head));
+              printf("\n");
+            } else {
+              printf("CASE NOT COVERED: %s %s\n", subgoal->id, prev_subgoal->id);
             }
           }
         }
@@ -487,8 +534,8 @@ void constructGraphs() {
   }
 }
 
-bool unconditionallyDependent(predicate* left, predicate* right, predicate* head) {
-  var* shared = shared_variables(left, right);
+bool unconditionallyDependent(predicate* current, predicate* previous, predicate* head) {
+  var* shared = pred_shared_variables(current, previous);
   for(var* shared_var_cursor = shared; shared_var_cursor != NULL; shared_var_cursor=shared_var_cursor->next) {
     bool in_head = false;
     for(var* head_var_cursor = head->first_var; head_var_cursor != NULL; head_var_cursor = head_var_cursor->next) {
@@ -503,6 +550,42 @@ bool unconditionallyDependent(predicate* left, predicate* right, predicate* head
   }
 
   return false;
+}
+
+bool unconditionallyIndependent(predicate* current, predicate* previous, predicate* head) {
+  var* shared = pred_shared_variables(current, previous);
+  var* in_head = pred_shared_variables(current, head);
+  if(in_head == NULL && shared == NULL) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+var* varsToGroundTest(predicate* current, predicate* previous, predicate* head) {
+  var* shared = pred_shared_variables(current, previous);
+  var* in_head = pred_shared_variables(current, head);
+  var* ground_test_vars = shared_variables(shared, in_head);
+
+  return ground_test_vars;
+}
+
+var* varsToIndependenceTest(predicate* current, predicate* previous, predicate* head) {
+  var* shared = pred_shared_variables(current, previous);
+  var* this_in_head = pred_shared_variables(current, head);
+  var* prev_in_head = pred_shared_variables(previous, head);
+
+  var* this_in_head_not_shared = diff_variables(this_in_head, shared);
+  var* prev_in_head_not_shared = diff_variables(prev_in_head, shared);
+
+  // append all
+  var* ind_test_vars = this_in_head_not_shared;
+
+  for(var* pcursor = prev_in_head_not_shared; pcursor != NULL; pcursor=pcursor->next) {
+    append_variable(pcursor, &ind_test_vars);
+  }
+  
+  return ind_test_vars;
 }
 
 void printNode(node* node) {
@@ -589,28 +672,30 @@ void printPredicate(predicate* p) {
 void printVariables(var* head) {
   int i = 1;
   var* cursor = head;
-  while(cursor->next != NULL) {
-    printf("%s, ", cursor->id);
-    i++;
-    cursor = cursor->next;
-  }
   if(cursor != NULL) {
-    printf("%s", cursor->id);
+    while(cursor->next != NULL) {
+      printf("%s, ", cursor->id);
+      i++;
+      cursor = cursor->next;
+    }
+    if(cursor != NULL) {
+      printf("%s", cursor->id);
+    }
   }
 }
 
 int main(void) {
 
   yyparse();
-  printClauses();
+  //printClauses();
   constructGraphs();
-  printGraphs();
+  //printGraphs();
 
   clause* c = head_clause;
   predicate* l = c->first_subgoal;
   predicate* r = c->first_subgoal->next;
 
-  var* first_shared = shared_variables(l, r);
+  var* first_shared = pred_shared_variables(l, r);
   var* shared_cursor = first_shared;
   while(shared_cursor != NULL) {
     shared_cursor = shared_cursor->next;
