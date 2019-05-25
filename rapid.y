@@ -61,6 +61,8 @@ var* pred_shared_variables(predicate*, predicate*);
 var* copy_variable(var*);
 void append_variable(var*, var**);
 
+
+void executeDependencyAnalysis(clause*, predicate*);
 var* unconditionallyDependentVars(predicate*, predicate*, predicate*);
 bool unconditionallyIndependent(predicate*, predicate*, predicate*);
 var* varsToGroundTest(predicate*, predicate*, predicate*);
@@ -69,6 +71,7 @@ var* varsToIndependenceTest(predicate*, predicate*, predicate*);
 bool strCmp(char*, char*);
 void printClauses();
 void printPredicate(predicate*);
+void asPrintVariables(char**, var*);
 void printVariables(var*);
 
 
@@ -413,16 +416,18 @@ void connect(node* src, node* dst, unsigned short lr) {
 
 void constructGraphs() {
   clause* c = head_clause;
+  // iterate over all clauses
   while(c != NULL) {
 
-      graph* graph = create_graph();
+    // create graph and entry node
+    graph* graph = create_graph();
 
-      node* entry_node = create_node('E');
-      entry_node->input = c->head->id;
-      graph->entry = entry_node;      
+    node* entry_node = create_node('E');
+    entry_node->input = c->head->id;
+    graph->entry = entry_node;
 
     if(strcmp(c->type, "fact") == 0) {
-
+      // simply return
       node* return_node = create_node('R');
 
       connect(entry_node, return_node, 1);
@@ -433,8 +438,9 @@ void constructGraphs() {
       node* copy_binding_env = NULL;
       node* last_copy_apply = NULL;
 
+
       int subgoal_count = 1;
-      for(predicate* subgoal = c->first_subgoal; 
+      for(predicate* subgoal = c->first_subgoal;
           subgoal != NULL; 
           subgoal=subgoal->next, subgoal_count++) 
       {
@@ -454,14 +460,14 @@ void constructGraphs() {
 
         update_entry_with_last_goal = update_entry_with_goal;
 
-        node* update_entry_binding = create_node('U');
-        update_entry_binding->input = subgoal->id;
-        connect(copy_binding_env, update_entry_binding, 1);
+        node* update_subgoal_with_entry_binding = create_node('U');
+        update_subgoal_with_entry_binding->input = subgoal->id;
+        connect(copy_binding_env, update_subgoal_with_entry_binding, 1);
 
         if(subgoal_count == 1) {
           // first subgoal simply apply
           node* apply = create_node('A');
-          connect(update_entry_binding, apply, 1);
+          connect(update_subgoal_with_entry_binding, apply, 1);
 
           if(subgoal->next == NULL) {
             connect(apply, update_entry_with_goal, 1);
@@ -471,29 +477,91 @@ void constructGraphs() {
             node* copy_apply = create_node('C');
             connect(apply, copy_apply, 1);
             last_copy_apply = copy_apply;
+            connect(copy_apply, update_entry_with_goal, 1);
           }
-        } else {
-          // execute dependency analysis
 
+        } else { // starting from the second subgoal...
+          // execute dependency analysis
           // for all previous subgoals
           for(predicate* prev_subgoal = c->first_subgoal; prev_subgoal != subgoal; prev_subgoal = prev_subgoal->next) {
+            
             // possibly unconditionally (in)dependent
             if(unconditionallyDependentVars(subgoal, prev_subgoal, c->head) != NULL) {
               printf("unconditionally dependent %s %s – ", subgoal->id, prev_subgoal->id);
               printVariables(unconditionallyDependentVars(subgoal, prev_subgoal, c->head));
               printf("\n");
-            } else if(unconditionallyIndependent(subgoal, prev_subgoal, c->head)) {
-              printf("unconditionally independent %s %s \n", subgoal->id, prev_subgoal->id);
-            } else {
-              var* ground = varsToGroundTest(subgoal, prev_subgoal, c->head);
-              if(ground != NULL) {
-                // include ground test node
-                printf("possibly grounded %s %s – ", subgoal->id, prev_subgoal->id);
-                printVariables(ground);
-                printf("\n");
+
+              // first update with binding of previous subgoal...
+              node* update_subgoal_with_prev_subgoal_binding = create_node('U');
+              connect(update_subgoal_with_entry_binding, update_subgoal_with_prev_subgoal_binding, 2);
+              connect(last_copy_apply, update_subgoal_with_prev_subgoal_binding, 1);
+
+              // then apply and distribute...
+              node* apply = create_node('A');
+              connect(update_subgoal_with_prev_subgoal_binding, apply, 1);
+              if(subgoal->next == NULL) {
+                connect(apply, update_entry_with_goal, 1);
+              } else {
+                // else copy out from apply because independence or ground test
+                // could require update of previous subgoal with the new binding
+                node* copy_apply = create_node('C');
+                connect(apply, copy_apply, 1);
+                last_copy_apply = copy_apply;
+                connect(copy_apply, update_entry_with_goal, 1);
               }
 
+            } else if(unconditionallyIndependent(subgoal, prev_subgoal, c->head)) {
+              printf("unconditionally independent %s %s \n", subgoal->id, prev_subgoal->id);
+              // simply apply and distribute...
+              node* apply = create_node('A');
+              connect(update_subgoal_with_entry_binding, apply, 1);
+
+              if(subgoal->next == NULL) {
+                connect(apply, update_entry_with_goal, 1);
+              } else {
+                // else copy out from apply because independence or ground test
+                // could require update of previous subgoal with the new binding
+                node* copy_apply = create_node('C');
+                connect(apply, copy_apply, 1);
+                last_copy_apply = copy_apply;
+                connect(copy_apply, update_entry_with_goal, 1);
+              }
+
+            } else {
+              // neither unconditionally dependent nor independent -> variables to be ground/independence tested?
+
+              node* update_subgoal_with_prev_subgoal_binding = create_node('U');
+              node* apply = create_node('A');
+              connect(last_copy_apply, update_subgoal_with_prev_subgoal_binding, 1);
+              connect(update_subgoal_with_prev_subgoal_binding, apply, 1);
+
+              node* ground_test;
+
+              var* possibly_grounded = varsToGroundTest(subgoal, prev_subgoal, c->head);
               var* possibly_dependent = varsToIndependenceTest(subgoal, prev_subgoal, c->head);
+
+              if(possibly_grounded != NULL) {
+                // include ground test node
+                printf("possibly grounded %s %s – ", subgoal->id, prev_subgoal->id);
+                printVariables(possibly_grounded);
+                printf("\n");
+
+                ground_test = create_node('G');
+                connect(update_subgoal_with_entry_binding, ground_test, 1);
+                asPrintVariables(&ground_test->input, possibly_grounded);
+
+
+                // left out of ground == failure == truly ground -> update with previous binding
+                connect(ground_test, update_subgoal_with_prev_subgoal_binding, 2);
+                
+                if(possibly_dependent == NULL) {
+                  // right of ground == success == not grounded -> just apply
+                  connect(ground_test, apply, 1);
+                } else {
+                  // independence test coming...
+                  // right of ground will be connected to I node                
+                }
+              }              
 
               if(possibly_dependent != NULL) {
                 if(possibly_dependent->next != NULL) {
@@ -501,7 +569,40 @@ void constructGraphs() {
                   printf("possibly dependent %s %s – ", subgoal->id, prev_subgoal->id);
                   printVariables(possibly_dependent);
                   printf("\n");
+
+                  node* independence_test = create_node('I');
+                  asPrintVariables(&independence_test->input, possibly_dependent);
+                  asprintf(&independence_test->input, "[[%s]]", independence_test->input);
+
+                  if(possibly_grounded != NULL) {
+                    // both independence and ground test necessary -> connect ground to ind. test
+                    connect(ground_test, independence_test, 1);
+                  } else {
+                    // only independence test
+                    connect(update_subgoal_with_entry_binding, independence_test, 1);
+                  }
+
+                  // left out independence test == failure == not independent -> update with previous binding
+                  connect(independence_test, update_subgoal_with_prev_subgoal_binding, 2);
+
+                  // right of independence test == success == truly independent -> just apply
+                  connect(independence_test, apply, 1);
                 }
+              }
+
+              if(possibly_dependent == NULL && possibly_grounded == NULL) {
+                printf("PROBLEM \n");
+              }
+
+              if(subgoal->next == NULL) {
+                connect(apply, update_entry_with_goal, 1);
+              } else {
+                // else copy out from apply because independence or ground test
+                // could require update of previous subgoal with the new binding
+                node* copy_apply = create_node('C');
+                connect(apply, copy_apply, 1);
+                last_copy_apply = copy_apply;
+                connect(copy_apply, update_entry_with_goal, 1);
               }
             }
           }
@@ -523,6 +624,10 @@ void constructGraphs() {
     c = c->next;
   }
 }
+
+/*
+* Dependeny Checks
+*/
 
 var* unconditionallyDependentVars(predicate* current, predicate* previous, predicate* head) {
   var* shared = pred_shared_variables(current, previous);
@@ -568,6 +673,13 @@ var* varsToIndependenceTest(predicate* current, predicate* previous, predicate* 
   return ind_test_vars;
 }
 
+
+
+
+/**
+  * Prints
+  */
+
 void printNode(node* node) {
   int printed = 0;
 
@@ -611,11 +723,6 @@ void printGraphs() {
   }
 }
 
-
-/**
-  * Prints
-  */
-
 void printClauses() {
   int i = 1;
   clause* c = head_clause;
@@ -650,12 +757,10 @@ void printPredicate(predicate* p) {
 
 
 void printVariables(var* head) {
-  int i = 1;
   var* cursor = head;
   if(cursor != NULL) {
     while(cursor->next != NULL) {
       printf("%s, ", cursor->id);
-      i++;
       cursor = cursor->next;
     }
     if(cursor != NULL) {
@@ -664,12 +769,33 @@ void printVariables(var* head) {
   }
 }
 
+void asPrintVariables(char** target, var* head) {
+  var* cursor = head;
+  if(cursor != NULL) {
+    while(cursor->next != NULL) {
+      if(*target != NULL) {
+        asprintf(target, "%s%s, ", *target, cursor->id);
+      } else {
+        asprintf(target, "%s, ", cursor->id);
+      }
+      cursor = cursor->next;
+    }
+    if(cursor != NULL) {
+      if(*target != NULL) {
+        asprintf(target, "%s%s", *target, cursor->id);
+      } else {
+        asprintf(target, "%s", cursor->id);
+      }
+    }
+  }
+}
+
 int main(void) {
 
   yyparse();
-  printClauses();
+  //printClauses();
   constructGraphs();
-  //printGraphs();
+  printGraphs();
 
   clause* c = head_clause;
   predicate* l = c->first_subgoal;
