@@ -61,7 +61,7 @@ var* pred_shared_variables(predicate*, predicate*);
 var* copy_variable(var*);
 void append_variable(var*, var**);
 
-bool unconditionallyDependent(predicate*, predicate*, predicate*);
+var* unconditionallyDependentVars(predicate*, predicate*, predicate*);
 bool unconditionallyIndependent(predicate*, predicate*, predicate*);
 var* varsToGroundTest(predicate*, predicate*, predicate*);
 var* varsToIndependenceTest(predicate*, predicate*, predicate*);
@@ -80,9 +80,6 @@ void printVariables(var*);
 clause* head_clause;
 clause* current_clause;
 predicate* current_predicate;
-
-var* first_variable;
-var* current_variable;
 
 int clause_count = 0;
 int node_count = 1;
@@ -183,31 +180,23 @@ Predicate: atom open_round_brackets PredMark TermList close_round_brackets {
     predicate* new_pred = $3;
     //new_pred->id = strdup($1); // a ( X, Y )
     asprintf(&(new_pred->id), "%s(%s)", $1, $4); // a ( X, Y )
-
-
-    current_predicate->first_var = first_variable;
-
     $$ = new_pred;
   }
   | PredMark Condition {
     printf(" %s ", $2);
     predicate* new_pred = $1;
     new_pred->id = strdup($2); // > (X, Y)
-    current_predicate->first_var = first_variable;
     $$ = new_pred;
    }
   | PredMark Assignment {
     printf(" %s ", $2);
     predicate* new_pred = $1;
     new_pred->id = strdup($2);
-    current_predicate->first_var = first_variable;
     $$ = new_pred;
   };
 
 PredMark: { predicate* new_pred = create_predicate(); 
     current_predicate = new_pred;
-    first_variable = NULL;
-    current_variable = NULL;
     $$ = new_pred; 
   };
 
@@ -235,7 +224,8 @@ RestList: List {$$ = $1}
 Operand: variable {
     var* v = create_variable($1);
 
-    add_variable(v);
+    append_variable(v, &(current_predicate->first_var));
+    //add_variable(v);
     $$ = v->id;
   }
   | Operation { $$ = $1; }
@@ -303,19 +293,6 @@ var* create_variable(char* id) {
   return v;
 };
 
-void add_variable(var *v) {
-  if(current_variable == NULL) {
-    // list empty
-    first_variable = v;
-  } else {
-    current_variable->next = v;
-  }
-
-  current_variable = v;
-
-  printf("%s", v->id);
-}
-
 var* pred_shared_variables(predicate* left, predicate* right) {
   return shared_variables(left->first_var, right->first_var);
 }
@@ -370,7 +347,11 @@ void append_variable(var* new_var, var** head) {
     *head = new_var;
   } else {
     var* cursor = NULL;
-    for(cursor = *head; cursor->next != NULL; cursor=cursor->next) {} // iterate to the end
+    for(cursor = *head; cursor->next != NULL; cursor=cursor->next) {
+      if(strcmp(cursor->id, new_var->id) == 0) {
+        return; // only append variables that don't exist yet
+      }
+    } // iterate to the end
     // append...
     cursor->next = new_var;
   }
@@ -497,22 +478,31 @@ void constructGraphs() {
           // for all previous subgoals
           for(predicate* prev_subgoal = c->first_subgoal; prev_subgoal != subgoal; prev_subgoal = prev_subgoal->next) {
             // possibly unconditionally (in)dependent
-            if(unconditionallyDependent(subgoal, prev_subgoal, c->head)) {
-              printf("unconditionally dependent %s %s\n", subgoal->id, prev_subgoal->id);
+            if(unconditionallyDependentVars(subgoal, prev_subgoal, c->head) != NULL) {
+              printf("unconditionally dependent %s %s – ", subgoal->id, prev_subgoal->id);
+              printVariables(unconditionallyDependentVars(subgoal, prev_subgoal, c->head));
+              printf("\n");
             } else if(unconditionallyIndependent(subgoal, prev_subgoal, c->head)) {
-              printf("unconditionally independent %s %s\n", subgoal->id, prev_subgoal->id);
-            } else if(varsToGroundTest(subgoal, prev_subgoal, c->head) != NULL) {
-              // include ground test node
-              printf("possibly grounded %s %s – ", subgoal->id, prev_subgoal->id);
-              printVariables(varsToGroundTest(subgoal, prev_subgoal, c->head));
-              printf("\n");
-            } else if(varsToIndependenceTest(subgoal, prev_subgoal, c->head) != NULL) {
-              // include independence test node
-              printf("possibly dependent %s %s – ", subgoal->id, prev_subgoal->id);
-              printVariables(varsToIndependenceTest(subgoal, prev_subgoal, c->head));
-              printf("\n");
+              printf("unconditionally independent %s %s \n", subgoal->id, prev_subgoal->id);
             } else {
-              printf("CASE NOT COVERED: %s %s\n", subgoal->id, prev_subgoal->id);
+              var* ground = varsToGroundTest(subgoal, prev_subgoal, c->head);
+              if(ground != NULL) {
+                // include ground test node
+                printf("possibly grounded %s %s – ", subgoal->id, prev_subgoal->id);
+                printVariables(ground);
+                printf("\n");
+              }
+
+              var* possibly_dependent = varsToIndependenceTest(subgoal, prev_subgoal, c->head);
+
+              if(possibly_dependent != NULL) {
+                if(possibly_dependent->next != NULL) {
+                  // include independence test node
+                  printf("possibly dependent %s %s – ", subgoal->id, prev_subgoal->id);
+                  printVariables(possibly_dependent);
+                  printf("\n");
+                }
+              }
             }
           }
         }
@@ -534,22 +524,12 @@ void constructGraphs() {
   }
 }
 
-bool unconditionallyDependent(predicate* current, predicate* previous, predicate* head) {
+var* unconditionallyDependentVars(predicate* current, predicate* previous, predicate* head) {
   var* shared = pred_shared_variables(current, previous);
-  for(var* shared_var_cursor = shared; shared_var_cursor != NULL; shared_var_cursor=shared_var_cursor->next) {
-    bool in_head = false;
-    for(var* head_var_cursor = head->first_var; head_var_cursor != NULL; head_var_cursor = head_var_cursor->next) {
-      if(strcmp(shared_var_cursor->id, head_var_cursor->id) == 0) {
-        in_head = true;
-      }
-    }
-    if(!in_head) {
-      // if one shared variable is not in the head of the clause
-      return true;
-    }
-  }
+  var* in_head = pred_shared_variables(current, head);
+  var* shared_not_in_head = diff_variables(shared, in_head);
 
-  return false;
+  return shared_not_in_head;
 }
 
 bool unconditionallyIndependent(predicate* current, predicate* previous, predicate* head) {
@@ -687,7 +667,7 @@ void printVariables(var* head) {
 int main(void) {
 
   yyparse();
-  //printClauses();
+  printClauses();
   constructGraphs();
   //printGraphs();
 

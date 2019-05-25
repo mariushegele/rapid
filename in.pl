@@ -1,24 +1,24 @@
-%1
+%1 %unconditionally_dependent
 a(X,Y) :- b(X,Z), c(Y,Z).
-%2
+%2 %ground
 a(X) :- b(X), c(X).
-%3
+%3 %ground %poss_dependent
 a(X,Y,Z) :- b(X,Y), c(X,Z).
-%4
+%4 %poss_dependent
 a(X,Y) :- b(X), c(Y).
-%5
+%5 %uncond_independent
 a(X) :- b(Y), c(Z).
-%6
+%6 %poss_dep
 a([A|B]) :- b(A), c(B).
-%7
+%7 %poss_dep
 a([A],[B]) :- b([[A]]), c([B]).
-%8
+%8 %groundX %poss_dependent
 a(X,Y,Z) :- b(X,Y), c(X,Z), d(X).
 
-%9
+%9 %groundXY
 a(X,Y) :- X>Y, X>=Y, X<Y, X=<Y, X = Y, X==Y, X\=Y, X\==Y.
 
-%10
+%10 %uncond_independent
 a(X,Y) :- b(5), c(5.117), 5 > X, d([5|T]).
 
 %
@@ -26,6 +26,7 @@ a(X,Y) :- b(5), c(5.117), 5 > X, d([5|T]).
 ar(X,Y) :- X+Y>5.
 ar(X,Y) :- a(X-Y).
 ar(X,Y) :- X*Y>5.
+%groundXY
 ar(X,Y) :- a(X/Y), b(X+Y*X).
 ar(X,Y) :- X+Y*X>5.
 ar(X,Y) :- X-Y/X>5.
