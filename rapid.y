@@ -51,7 +51,7 @@ typedef struct graph {
 
 // clauses, predicates, variables
 clause* create_clause();
-clause* add_clause(clause*);
+clause* append_clause(clause*, clause**);
 
 predicate* create_predicate();
 predicate* add_predicate(predicate*, predicate*);
@@ -78,13 +78,9 @@ void printVariables(var*);
 
 
 
-// graphs, nodes and edges
-
-
 // global pointer
-clause* head_clause;
-clause* current_clause;
-predicate* current_predicate;
+clause* clauses = NULL;
+var* current_variables = NULL;
 
 int clause_count = 0;
 int node_count = 1;
@@ -122,7 +118,7 @@ int yylex();
 
 %type<clause> Rule Fact Clause
 
-%type<pred> Predicate PredMark PredicateList
+%type<pred> Predicate PredicateList
 
 %start S
 
@@ -134,76 +130,70 @@ int yylex();
 
 %%
 
-S: M Clause { 
-    printf("\n\t => %s \n\n", $2->type);
-  }
-  | S M Clause {
-    printf("\n\t => %s \n\n", $3->type); 
-  }
+S: Clause { append_clause($1, &clauses); }
+  | S Clause { append_clause($2, &clauses); }
   | S Comment;
   | Comment;
   | S end;
   | end;
 
-M: { printf("%d\n", clause_count);
-  clause_count++;
-  clause* new_clause = create_clause(); 
-  add_clause(new_clause); 
-  
-  };
-
 Clause: Rule { 
-  current_clause->type = "rule";
-  $$ = current_clause;
+  $1->type = "rule";
+  $$ = $1;
  }
   | Fact { 
-    current_clause->type = "fact";
-    $$ = current_clause; 
+    $1->type = "fact";
+    $$ = $1; 
   };
 
 Rule: Predicate left_arrow PredicateList dot {
-    current_clause->head = $1;
-    current_clause->first_subgoal = $3;
+    clause* new_clause = create_clause();
+    new_clause->head = $1;
+    new_clause->first_subgoal = $3;
+    $$ = new_clause;
   };
 
 Fact: Predicate dot {
-    current_clause->head = $1;
-    current_clause->first_subgoal = NULL;
+    clause* new_clause = create_clause();
+    new_clause->head = $1;
+    new_clause->first_subgoal = NULL;
+    $$ = new_clause;
   };
 
-PredicateList: Predicate { $$ = $1; }
+PredicateList: Predicate { 
+    $$ = $1;
+  }
   | Predicate comma PredicateList { 
       predicate* head = $1;
-      predicate* next = $3;
-
-      head->next = next;
+      head->next = $3;
       $$ = head;      
   };
 
-Predicate: atom open_round_brackets PredMark TermList close_round_brackets {
-    printf(" %s(%s) ", $1, $4);
-    predicate* new_pred = $3;
-    //new_pred->id = strdup($1); // a ( X, Y )
-    asprintf(&(new_pred->id), "%s(%s)", $1, $4); // a ( X, Y )
-    $$ = new_pred;
+Predicate: atom open_round_brackets TermList close_round_brackets {
+    predicate* new_predicate = create_predicate();
+    asprintf(&(new_predicate->id), "%s(%s)", $1, $3); // a ( X, Y )
+    new_predicate->first_var = current_variables;
+    current_variables = NULL;
+
+    $$ = new_predicate;
   }
-  | PredMark Condition {
-    printf(" %s ", $2);
-    predicate* new_pred = $1;
-    new_pred->id = strdup($2); // > (X, Y)
-    $$ = new_pred;
+  | Condition {
+    predicate* new_predicate = create_predicate();
+    new_predicate->id = $1;
+    new_predicate->first_var = current_variables;
+    current_variables = NULL;
+
+    $$ = new_predicate;
    }
-  | PredMark Assignment {
-    printf(" %s ", $2);
-    predicate* new_pred = $1;
-    new_pred->id = strdup($2);
-    $$ = new_pred;
+  | Assignment {
+    predicate* new_predicate = create_predicate();
+    new_predicate->id = $1;
+    new_predicate->first_var = current_variables;
+    current_variables = NULL;
+
+    $$ = new_predicate;
   };
 
-PredMark: { predicate* new_pred = create_predicate(); 
-    current_predicate = new_pred;
-    $$ = new_pred; 
-  };
 
 TermList: Term { $$ = $1; }
   | Term comma TermList { asprintf(&$$, "%s, %s", $1, $3); 
@@ -226,10 +216,11 @@ List: open_square_brackets close_square_brackets { asprintf(&$$, "[]"); }
 RestList: List {$$ = $1}
   | Operand {$$ = $1};
 
+
 Operand: variable {
     var* v = create_variable($1);
 
-    append_variable(v, &(current_predicate->first_var));
+    append_variable(v, &current_variables);
     //add_variable(v);
     $$ = v->id;
   }
@@ -271,17 +262,18 @@ clause* create_clause() {
   return c;
 };
 
-clause* add_clause(clause* c) {
-  if(current_clause == NULL) {
-    // List empty
-    head_clause = c;
+clause* append_clause(clause* new_clause, clause** head) {
+  if(*head == NULL) {
+    *head = new_clause;
   } else {
-    current_clause->next = c;
+    clause* cursor = NULL;
+    for(cursor = *head; cursor->next != NULL; cursor=cursor->next) { } // iterate to the end
+    // append...
+    cursor->next = new_clause;
   }
-
-  current_clause = c;
-  return c;
-};
+  clause_count++;
+  return new_clause;
+}
 
 predicate* create_predicate() {
   predicate* p = malloc(sizeof(struct predicate));
@@ -434,7 +426,7 @@ void connect_all_to(node* node_list, node* dst, unsigned short lr) {
 }
 
 void constructGraphs() {
-  clause* c = head_clause;
+  clause* c = clauses;
   // iterate over all clauses
   while(c != NULL) {
 
@@ -701,7 +693,7 @@ void printNode(node* node) {
 }
 
 void printGraphs() {
-  clause* c = head_clause;
+  clause* c = clauses;
   while(c != NULL) {
     if(c->graph != NULL) {
       node* node_cursor = c->graph->node_head;
@@ -716,7 +708,7 @@ void printGraphs() {
 
 void printClauses() {
   int i = 1;
-  clause* c = head_clause;
+  clause* c = clauses;
   while(c != NULL) {
     printf("%d \t type: %s \n", i, c->type);
 
@@ -788,7 +780,7 @@ int main(void) {
   constructGraphs();
   printGraphs();
 
-  clause* c = head_clause;
+  clause* c = clauses;
   predicate* l = c->first_subgoal;
   predicate* r = c->first_subgoal->next;
 
