@@ -82,7 +82,6 @@ void printVariables(var*);
 clause* clauses = NULL;
 var* current_variables = NULL;
 
-int clause_count = 0;
 int node_count = 1;
 
 graph* current_graph = NULL;
@@ -271,7 +270,6 @@ clause* append_clause(clause* new_clause, clause** head) {
     // append...
     cursor->next = new_clause;
   }
-  clause_count++;
   return new_clause;
 }
 
@@ -425,6 +423,9 @@ void connect_all_to(node* node_list, node* dst, unsigned short lr) {
   }
 }
 
+/**
+* Where the magic happens – construct a graph for each clause in the symbol table
+*/
 void constructGraphs() {
   clause* c = clauses;
   // iterate over all clauses
