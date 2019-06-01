@@ -13,7 +13,8 @@ typedef struct var {
 } var;
 
 typedef struct predicate {
-  char *id;
+  char* id;
+  char* full_id;
   var* first_var;
   struct predicate* next;
   struct node* apply_copy_node;
@@ -26,6 +27,13 @@ typedef struct clause {
   struct clause* next;
   struct graph* graph;
 } clause;
+
+typedef struct pred_group {
+  struct clause* clauses;
+  char* id;
+  int num_args;
+  struct pred_group* next;
+} pred_group;
 
 typedef struct edge {
   // node* from;
@@ -51,7 +59,7 @@ typedef struct graph {
 
 // clauses, predicates, variables
 clause* create_clause();
-clause* append_clause(clause*, clause**);
+void insert_clause(clause*, pred_group**);
 
 predicate* create_predicate();
 predicate* add_predicate(predicate*, predicate*);
@@ -76,10 +84,15 @@ void printPredicate(predicate*);
 void asPrintVariables(char**, var*);
 void printVariables(var*);
 
+void printNode(node*);
+void fprintNode(node*, FILE**);
+void printGraphs();
+void writeGraphs();
 
 
 // global pointer
-clause* clauses = NULL;
+pred_group* grouped_clauses = NULL;
+
 var* current_variables = NULL;
 
 int node_count = 1;
@@ -129,8 +142,8 @@ int yylex();
 
 %%
 
-S: Clause { append_clause($1, &clauses); }
-  | S Clause { append_clause($2, &clauses); }
+S: Clause { insert_clause($1, &grouped_clauses); }
+  | S Clause { insert_clause($2, &grouped_clauses); }
   | S Comment;
   | Comment;
   | S end;
@@ -170,7 +183,8 @@ PredicateList: Predicate {
 
 Predicate: atom open_round_brackets TermList close_round_brackets {
     predicate* new_predicate = create_predicate();
-    asprintf(&(new_predicate->id), "%s(%s)", $1, $3); // a ( X, Y )
+    asprintf(&(new_predicate->full_id), "%s(%s)", $1, $3); // a ( X, Y )
+    asprintf(&(new_predicate->id), "%s", $1); // a 
     new_predicate->first_var = current_variables;
     current_variables = NULL;
 
@@ -179,6 +193,7 @@ Predicate: atom open_round_brackets TermList close_round_brackets {
   | Condition {
     predicate* new_predicate = create_predicate();
     new_predicate->id = $1;
+    new_predicate->full_id = $1;
     new_predicate->first_var = current_variables;
     current_variables = NULL;
 
@@ -187,6 +202,7 @@ Predicate: atom open_round_brackets TermList close_round_brackets {
   | Assignment {
     predicate* new_predicate = create_predicate();
     new_predicate->id = $1;
+    new_predicate->full_id = $1;
     new_predicate->first_var = current_variables;
     current_variables = NULL;
 
@@ -227,9 +243,9 @@ Operand: variable {
   | Constant { $$ = $1; };
 
 Constant: num { $$ = $1; }
-  | real { $$ = $1; };
-
-Operation: open_round_brackets Operation close_round_brackets { asprintf(&$$, "(%s)", $2); }
+  | real  
+ 
+ Operation: open_round_brackets Operation close_round_brackets { asprintf(&$$, "(%s)", $2); }
   | Operand plus Operand { asprintf(&$$, "+(%s, %s)", $1, $3); }
   | Operand minus Operand { asprintf(&$$, "-(%s, %s)", $1, $3); }
   | Operand times Operand { asprintf(&$$, "*(%s, %s)", $1, $3); }
@@ -255,11 +271,39 @@ Comment: comment { }
 
 clause* create_clause() {
   clause* c = malloc(sizeof(struct clause));
+  c->type = NULL;
   c->next = NULL;
   c->graph = NULL;
-
+  c->head = NULL;
+  c->first_subgoal = NULL;
   return c;
 };
+
+int num_of_args(var* head) {
+  int count = 0;
+  for(var* var_cursor = head; var_cursor != NULL; var_cursor=var_cursor->next) {
+    count++;
+  }
+  return count;
+};
+
+pred_group* create_group(clause* clause) {
+  // create a group based on a clause
+  pred_group* group = malloc(sizeof(struct pred_group));
+  group->id = clause->head->id;
+  
+  // determine number of arguments
+  group->num_args = num_of_args(clause->head->first_var);
+  group->clauses = clause;
+  group->next = NULL;
+
+  return group;
+}
+
+bool is_in_group(clause* c, pred_group* group) {
+  int num_args = num_of_args(c->head->first_var);
+  return ( strcmp(c->head->id, group->id) == 0 ) && ( group->num_args == num_args );
+}
 
 clause* append_clause(clause* new_clause, clause** head) {
   if(*head == NULL) {
@@ -273,10 +317,36 @@ clause* append_clause(clause* new_clause, clause** head) {
   return new_clause;
 }
 
+void insert_clause(clause* new_clause, pred_group** head) {
+  if(*head == NULL) {
+    *head = create_group(new_clause);
+    return;
+  }
+
+  pred_group* group_cursor;
+
+  for(group_cursor = *head;
+      group_cursor->next != NULL;
+      group_cursor = group_cursor->next) { 
+        if(is_in_group(new_clause, group_cursor)) {
+          // append into group
+          append_clause(new_clause, &group_cursor->clauses);
+          return;
+        }
+      }
+  
+  group_cursor->next = create_group(new_clause);
+}
+
+
+
 predicate* create_predicate() {
   predicate* p = malloc(sizeof(struct predicate));
-  p->next = NULL;
+  p->id = NULL;
+  p->full_id = NULL;
   p->first_var = NULL;
+  p->next = NULL;
+  p->apply_copy_node = NULL;
   return p;
 };
 
@@ -360,6 +430,7 @@ void append_variable(var* new_var, var** head) {
 graph* create_graph() {
   graph* new_graph = malloc(sizeof(struct graph));
   new_graph->entry = NULL;
+  new_graph->node_head = NULL;
 
   // create global pointer
   current_graph = new_graph;
@@ -372,8 +443,10 @@ node* create_node(char type) {
   new_node->index = node_count;
   node_count++;
   new_node->type = type;
+  new_node->input = NULL;
   new_node->first_out = NULL;
   new_node->next = NULL;
+  new_node->next_last_in_stream = NULL;
 
   // append to node list
   if(current_graph->node_head == NULL) {
@@ -427,179 +500,186 @@ void connect_all_to(node* node_list, node* dst, unsigned short lr) {
 * Where the magic happens – construct a graph for each clause in the symbol table
 */
 void constructGraphs() {
-  clause* c = clauses;
-  // iterate over all clauses
-  while(c != NULL) {
+  for(pred_group* group = grouped_clauses;
+      group != NULL; group = group->next)
+    {
+      clause* c = group->clauses;
+      // iterate over all clauses
+      while(c != NULL) {
 
-    // create graph and entry node
-    graph* graph = create_graph();
+        // create graph and entry node
+        graph* graph = create_graph();
 
-    node* entry_node = create_node('E');
-    entry_node->input = c->head->id;
-    graph->entry = entry_node;
+        node* entry_node = create_node('E');
+        entry_node->input = c->head->full_id;
+        graph->entry = entry_node;
 
-    if(strcmp(c->type, "fact") == 0) {
-      // simply return
-      node* return_node = create_node('R');
+        if(strcmp(c->type, "fact") == 0) {
+          // simply return
+          node* return_node = create_node('R');
 
-      connect(entry_node, return_node, 1);
-      
-    } else if(strcmp(c->type, "rule") == 0) {
+          connect(entry_node, return_node, 1);
+          
+        } else if(strcmp(c->type, "rule") == 0) {
 
-      node* update_entry_with_last_goal = NULL;
-      node* copy_binding_env = NULL;
-      node* last_in_stream; // list of nodes that are "last in the stream" -> to be applied
+          node* update_entry_with_last_goal = NULL;
+          node* copy_binding_env = NULL;
+          node* last_in_stream; // list of nodes that are "last in the stream" -> to be applied
 
 
-      int subgoal_count = 1;
-      for(predicate* subgoal = c->first_subgoal;
-          subgoal != NULL; 
-          subgoal=subgoal->next, subgoal_count++) 
-      {
-        node* update_entry_with_goal = create_node('U');
+          int subgoal_count = 1;
+          for(predicate* subgoal = c->first_subgoal;
+              subgoal != NULL; 
+              subgoal=subgoal->next, subgoal_count++) 
+          {
+            node* update_entry_with_goal = create_node('U');
 
-        if(subgoal_count == 1) {
+            if(subgoal_count == 1) {
+              // left of entry with right of subgoal goal update      
           // left of entry with right of subgoal goal update      
-          connect(entry_node, update_entry_with_goal, 2);
+              // left of entry with right of subgoal goal update      
+              connect(entry_node, update_entry_with_goal, 2);
 
-          // right of entry distributes binding environment
-          copy_binding_env = create_node('C');
-          connect(entry_node, copy_binding_env, 1);
-        } else {
-          // starting from the second subgoal
-          connect(update_entry_with_last_goal, update_entry_with_goal, 2);
-        }
-
-        update_entry_with_last_goal = update_entry_with_goal;
-
-        node* update_subgoal_with_entry_binding = create_node('U');
-        update_subgoal_with_entry_binding->input = subgoal->id;
-        last_in_stream = update_subgoal_with_entry_binding;
-        connect(copy_binding_env, update_subgoal_with_entry_binding, 1);
-
-
-        node* apply; // the final goal: an apply node
-
-        if(subgoal_count > 1) {  // starting from the second subgoal...
-          
-          // execute dependency analysis
-          // for all previous subgoals
-
-          printf("\npredicate: %s \n", subgoal->id);
-          
-          for(predicate* prev_subgoal = c->first_subgoal; prev_subgoal != subgoal; prev_subgoal = prev_subgoal->next) {
-            
-            // possibly unconditionally (in)dependent
-            if(unconditionallyDependentVars(subgoal, prev_subgoal, c->head) != NULL) {
-              printf("unconditionally dependent %s %s – ", subgoal->id, prev_subgoal->id);
-              printVariables(unconditionallyDependentVars(subgoal, prev_subgoal, c->head));
-              printf("\n");
-
-              // first update with binding of previous subgoal...
-              node* update_subgoal_with_prev_subgoal_binding = create_node('U');
-              connect_all_to(last_in_stream, update_subgoal_with_prev_subgoal_binding, 2);
-              connect(prev_subgoal->apply_copy_node, update_subgoal_with_prev_subgoal_binding, 1);
-
-              last_in_stream = update_subgoal_with_prev_subgoal_binding;
-              
-            } else if(unconditionallyIndependent(subgoal, prev_subgoal, c->head)) {
-              printf("unconditionally independent %s %s \n", subgoal->id, prev_subgoal->id);
-              // nothing to be done
-
+              // right of entry distributes binding environment
+              copy_binding_env = create_node('C');
+              connect(entry_node, copy_binding_env, 1);
             } else {
-              // neither unconditionally dependent nor independent -> variables to be ground/independence tested?
+              // starting from the second subgoal
+              connect(update_entry_with_last_goal, update_entry_with_goal, 2);
+            }
 
-              node* update_subgoal_with_prev_subgoal_binding = create_node('U');
-              connect(prev_subgoal->apply_copy_node, update_subgoal_with_prev_subgoal_binding, 1);
+            update_entry_with_last_goal = update_entry_with_goal;
 
-              node* ground_test;
+            node* update_subgoal_with_entry_binding = create_node('U');
+            update_subgoal_with_entry_binding->input = subgoal->full_id;
+            last_in_stream = update_subgoal_with_entry_binding;
+            connect(copy_binding_env, update_subgoal_with_entry_binding, 1);
 
-              var* possibly_grounded = varsToGroundTest(subgoal, prev_subgoal, c->head);
-              var* possibly_dependent = varsToIndependenceTest(subgoal, prev_subgoal, c->head);
 
-              if(possibly_grounded != NULL) {
-                // include ground test node
-                printf("possibly grounded %s %s – ", subgoal->id, prev_subgoal->id);
-                printVariables(possibly_grounded);
-                printf("\n");
+            node* apply; // the final goal: an apply node
 
-                ground_test = create_node('G');
-                asPrintVariables(&ground_test->input, possibly_grounded);
+            if(subgoal_count > 1) {  // starting from the second subgoal...
+              
+              // execute dependency analysis
+              // for all previous subgoals
+
+              printf("\npredicate: %s \n", subgoal->full_id);
+              
+              for(predicate* prev_subgoal = c->first_subgoal; prev_subgoal != subgoal; prev_subgoal = prev_subgoal->next) {
                 
-                connect_all_to(last_in_stream, ground_test, 1);
-
-                // left out of ground == failure == truly ground -> update with previous binding
-                connect(ground_test, update_subgoal_with_prev_subgoal_binding, 2);
-                
-                // right of ground == success == not grounded -> will be forwarded to apply or next test
-                last_in_stream = ground_test;
-                ground_test->next_last_in_stream = update_subgoal_with_prev_subgoal_binding;
-              }              
-
-              if(possibly_dependent != NULL) {
-                if(possibly_dependent->next != NULL) {
-                  // include independence test node
-                  printf("possibly dependent %s %s – ", subgoal->id, prev_subgoal->id);
-                  printVariables(possibly_dependent);
+                // possibly unconditionally (in)dependent
+                if(unconditionallyDependentVars(subgoal, prev_subgoal, c->head) != NULL) {
+                  printf("unconditionally dependent %s %s – ", subgoal->full_id, prev_subgoal->full_id);
+                  printVariables(unconditionallyDependentVars(subgoal, prev_subgoal, c->head));
                   printf("\n");
 
-                  node* independence_test = create_node('I');
-                  asPrintVariables(&independence_test->input, possibly_dependent);
-                  asprintf(&independence_test->input, "[[%s]]", independence_test->input);
+                  // first update with binding of previous subgoal...
+                  node* update_subgoal_with_prev_subgoal_binding = create_node('U');
+                  connect_all_to(last_in_stream, update_subgoal_with_prev_subgoal_binding, 2);
+                  connect(prev_subgoal->apply_copy_node, update_subgoal_with_prev_subgoal_binding, 1);
 
-                  if(possibly_grounded) {
-                    connect(last_in_stream, independence_test, 1);
-                  } else {
-                    connect_all_to(last_in_stream, independence_test, 1);
+                  last_in_stream = update_subgoal_with_prev_subgoal_binding;
+                  
+                } else if(unconditionallyIndependent(subgoal, prev_subgoal, c->head)) {
+                  printf("unconditionally independent %s %s \n", subgoal->full_id, prev_subgoal->full_id);
+                  // nothing to be done
+
+                } else {
+                  // neither unconditionally dependent nor independent -> variables to be ground/independence tested?
+
+                  node* update_subgoal_with_prev_subgoal_binding = create_node('U');
+                  connect(prev_subgoal->apply_copy_node, update_subgoal_with_prev_subgoal_binding, 1);
+
+                  node* ground_test;
+
+                  var* possibly_grounded = varsToGroundTest(subgoal, prev_subgoal, c->head);
+                  var* possibly_dependent = varsToIndependenceTest(subgoal, prev_subgoal, c->head);
+
+                  if(possibly_grounded != NULL) {
+                    // include ground test node
+                    printf("possibly grounded %s %s – ", subgoal->full_id, prev_subgoal->full_id);
+                    printVariables(possibly_grounded);
+                    printf("\n");
+
+                    ground_test = create_node('G');
+                    asPrintVariables(&ground_test->input, possibly_grounded);
+                    
+                    connect_all_to(last_in_stream, ground_test, 1);
+
+                    // left out of ground == failure == truly ground -> update with previous binding
+                    connect(ground_test, update_subgoal_with_prev_subgoal_binding, 2);
+                    
+                    // right of ground == success == not grounded -> will be forwarded to apply or next test
+                    last_in_stream = ground_test;
+                    ground_test->next_last_in_stream = update_subgoal_with_prev_subgoal_binding;
+                  }                               
+
+                  if(possibly_dependent != NULL) {
+                    if(possibly_dependent->next != NULL) {
+                      // include independence test node
+                      printf("possibly dependent %s %s – ", subgoal->full_id, prev_subgoal->full_id);
+                      printVariables(possibly_dependent);
+                      printf("\n");
+
+                      node* independence_test = create_node('I');
+                      asPrintVariables(&independence_test->input, possibly_dependent);
+                      asprintf(&independence_test->input, "[[%s]]", independence_test->input);
+
+                      if(possibly_grounded) {
+                        connect(last_in_stream, independence_test, 1);
+                      } else {
+                        connect_all_to(last_in_stream, independence_test, 1);
+                      }
+
+                      // left out independence test == failure == not independent -> update with previous binding
+                      connect(independence_test, update_subgoal_with_prev_subgoal_binding, 2);
+
+                      // right of independence test == success == truly independent -> will be forwarded to apply or next test
+                      last_in_stream = independence_test;
+                      last_in_stream->next_last_in_stream = update_subgoal_with_prev_subgoal_binding;
+
+                    }
                   }
 
-                  // left out independence test == failure == not independent -> update with previous binding
-                  connect(independence_test, update_subgoal_with_prev_subgoal_binding, 2);
-
-                  // right of independence test == success == truly independent -> will be forwarded to apply or next test
-                  last_in_stream = independence_test;
-                  last_in_stream->next_last_in_stream = update_subgoal_with_prev_subgoal_binding;
-
+                  if(possibly_dependent == NULL && possibly_grounded == NULL) {
+                    printf("PROBLEM \n");
+                  }
                 }
               }
 
-              if(possibly_dependent == NULL && possibly_grounded == NULL) {
-                printf("PROBLEM \n");
-              }
+            }
+
+            // finally apply
+            apply = create_node('A');
+            connect_all_to(last_in_stream, apply, 1);
+
+            // finally update the entry distribution with the applied subgoal's binding
+            if(subgoal->next == NULL) {
+              connect(apply, update_entry_with_goal, 1);
+            } else {
+              // else copy out from apply because independence or ground test
+              // could require update of previous subgoal with the new binding
+              node* copy_apply = create_node('C');
+              connect(apply, copy_apply, 1);
+              subgoal->apply_copy_node = copy_apply;
+              connect(copy_apply, update_entry_with_goal, 1);
             }
           }
 
-        }
+          // feed last updated environment into return
+          node* return_node = create_node('R');
+          connect(update_entry_with_last_goal, return_node, 1);
 
-        // finally apply
-        apply = create_node('A');
-        connect_all_to(last_in_stream, apply, 1);
-
-        // finally update the entry distribution with the applied subgoal's binding
-        if(subgoal->next == NULL) {
-          connect(apply, update_entry_with_goal, 1);
         } else {
-          // else copy out from apply because independence or ground test
-          // could require update of previous subgoal with the new binding
-          node* copy_apply = create_node('C');
-          connect(apply, copy_apply, 1);
-          subgoal->apply_copy_node = copy_apply;
-          connect(copy_apply, update_entry_with_goal, 1);
+          printf("unexpected rule/fact");
         }
+        c->graph = graph;
+
+
+        c = c->next;
       }
 
-      // feed last updated environment into return
-      node* return_node = create_node('R');
-      connect(update_entry_with_last_goal, return_node, 1);
-
-    } else {
-      printf("unexpected rule/fact");
-    }
-    c->graph = graph;
-
-
-    c = c->next;
-  }
+    }  
 }
 
 /*
@@ -693,47 +773,106 @@ void printNode(node* node) {
   printf("\n");
 }
 
-void printGraphs() {
-  clause* c = clauses;
-  while(c != NULL) {
-    if(c->graph != NULL) {
-      node* node_cursor = c->graph->node_head;
-      while(node_cursor != NULL) {
-        printNode(node_cursor);
-        node_cursor = node_cursor->next;
+void fprintNode(node* node, FILE** f) {
+  int printed = 0;
+
+  fprintf(*f, "%d\t%c\t", node->index, node->type);
+  if(node->first_out != NULL) {
+    for(edge* edge_cursor = node->first_out;
+      edge_cursor != NULL; edge_cursor = edge_cursor->next)
+      {
+        fprintf(*f, "(%d,%d)\t", edge_cursor->dst->index, edge_cursor->lr);
+        printed++;
       }
+  }
+
+  while(printed < 2) {
+    fprintf(*f, "-\t");
+    printed++;
+  }
+  
+  if(node->input != NULL) {
+    fprintf(*f, "%s", node->input);
+  }
+  else {
+    if(printed < 3) {
+      fprintf(*f, "-");
     }
-    c = c->next;
+  }
+  fprintf(*f, "\n");
+}
+
+void printGraphs() {
+  for(pred_group* group = grouped_clauses; group != NULL; group = group->next) {
+    clause* c = group->clauses;
+    while(c != NULL) {
+      if(c->graph != NULL) {
+        node* node_cursor = c->graph->node_head;
+        while(node_cursor != NULL) {
+          printNode(node_cursor);
+          node_cursor = node_cursor->next;
+        }
+      }
+      c = c->next;
+    }
   }
 }
 
-void printClauses() {
-  int i = 1;
-  clause* c = clauses;
-  while(c != NULL) {
-    printf("%d \t type: %s \n", i, c->type);
+void writeGraphs() {
+  FILE *f = fopen("graphs.txt", "w");
+  if (f == NULL) {
+    printf("Error opening file!\n");
+    return;
+  }
 
-    printf("\t head: ");
-    printPredicate(c->head);
-
-    predicate* p = c->first_subgoal;
-    int j = 1;
-    while(p != NULL) {
-      printf("\t subgoal %d: ", j);
-      printPredicate(p);
-
-      j++;
-      p = p->next;
+  for(pred_group* group = grouped_clauses; group != NULL; group = group->next) {
+    clause* c = group->clauses;
+    while(c != NULL) {
+      if(c->graph != NULL) {
+        node* node_cursor = c->graph->node_head;
+        while(node_cursor != NULL) {
+          fprintNode(node_cursor, &f);
+          node_cursor = node_cursor->next;
+        }
+      }
+      c = c->next;
     }
+  }
 
+  fclose(f);
+}
+
+void printClauses() {
+  for(pred_group* group = grouped_clauses; group != NULL; group=group->next) {
+    printf("Predicate %s with number of arguments: %d\n", group->id, group->num_args);
+    int i = 1;
+    clause* c = group->clauses;
+    while(c != NULL) {
+      printf("%d \t type: %s \n", i, c->type);
+
+      printf("\t head: ");
+      printPredicate(c->head);
+
+      predicate* p = c->first_subgoal;
+      int j = 1;
+      while(p != NULL) {
+        printf("\t subgoal %d: ", j);
+        printPredicate(p);
+
+        j++;
+        p = p->next;
+      }
+
+      printf("\n");
+      i++;
+      c = c->next;
+    }
     printf("\n");
-    i++;
-    c = c->next;
   }
 }
 
 void printPredicate(predicate* p) {
-  printf("%s – ", p->id);
+  printf("%s – ", p->full_id);
   if(p->first_var != NULL) {
     printVariables(p->first_var);
   }
@@ -775,21 +914,11 @@ void asPrintVariables(char** target, var* head) {
 }
 
 int main(void) {
-
   yyparse();
   printClauses();
   constructGraphs();
   printGraphs();
-
-  clause* c = clauses;
-  predicate* l = c->first_subgoal;
-  predicate* r = c->first_subgoal->next;
-
-  var* first_shared = pred_shared_variables(l, r);
-  var* shared_cursor = first_shared;
-  while(shared_cursor != NULL) {
-    shared_cursor = shared_cursor->next;
-  }
+  writeGraphs();
 
   return 1;
 }

@@ -44,3 +44,5 @@ a(X) :- b(b(b([A|B]))).
 
 b(A,A).
 c(A,A).
+
+p(X,Y):-q(X,Z),r(Z),s(Y,Z),t(Y),u(X,Y,Z).
