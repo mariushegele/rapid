@@ -71,7 +71,7 @@ var* pred_shared_variables(predicate*, predicate*);
 var* copy_variable(var*);
 void append_variable(var*, var**);
 
-
+void constructGraphs();
 void executeDependencyAnalysis(clause*, predicate*);
 var* unconditionallyDependentVars(predicate*, predicate*, predicate*);
 bool unconditionallyIndependent(predicate*, predicate*, predicate*);
@@ -142,8 +142,18 @@ int yylex();
 
 %%
 
-S: Clause { insert_clause($1, &grouped_clauses); }
-  | S Clause { insert_clause($2, &grouped_clauses); }
+S: Clause { insert_clause($1, &grouped_clauses);
+    printClauses();
+    constructGraphs();
+    printGraphs();
+    writeGraphs(); 
+  }
+  | S Clause { insert_clause($2, &grouped_clauses); 
+    printClauses();
+    constructGraphs();
+    printGraphs();
+    writeGraphs();
+  }
   | S Comment;
   | Comment;
   | S end;
@@ -500,6 +510,10 @@ void connect_all_to(node* node_list, node* dst, unsigned short lr) {
 * Where the magic happens – construct a graph for each clause in the symbol table
 */
 void constructGraphs() {
+  node_count = 1;
+
+  current_graph = NULL;
+  current_node = NULL;
   for(pred_group* group = grouped_clauses;
       group != NULL; group = group->next)
     {
